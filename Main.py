@@ -4,8 +4,15 @@ import python_speech_features as psf
 import scipy.io.wavfile as wav
 import fastdtw
 from scipy.spatial.distance import euclidean
+from scipy.ndimage import gaussian_filter
+from dtaidistance import dtw, dtw_ndim
 import numpy as np
 from tqdm import tqdm
+
+def pre_emphasis(signal, alpha=0.97):
+    emphasized_signal = np.append(signal[0], signal[1:] - alpha * signal[:-1])
+    return emphasized_signal
+
 
 def extract_features(directory, save_file):
     features = {}
@@ -17,7 +24,9 @@ def extract_features(directory, save_file):
                 if wav_file.endswith(".wav"):
                     file_path = os.path.join(person_dir, wav_file)
                     _, signal = wav.read(file_path)
-                    mfcc_feat = psf.mfcc(signal, winfunc=np.hamming)
+                    signal = pre_emphasis(signal)
+                    mfcc_feat = psf.mfcc(signal, numcep=39, winfunc=np.hamming)
+                    mfcc_feat = gaussian_filter(mfcc_feat, sigma=1)
                     features[person][wav_file] = mfcc_feat
 
     with open(save_file, 'wb') as f:
@@ -42,11 +51,13 @@ def compare_with_same_template(input_features, template_features):
                 else:
                     for other_vowel in template_features[other_person]:
                         mfcc_other_vowel = template_features[other_person][other_vowel]
-                        dist, _ = fastdtw.fastdtw(mfcc_person_vowel, mfcc_other_vowel, dist=euclidean)
+                        # dist, _ = fastdtw.fastdtw(mfcc_person_vowel, mfcc_other_vowel, dist=euclidean)
+                        dist = dtw_ndim.distance_fast(mfcc_person_vowel, mfcc_other_vowel)
                         if dist < best_distance:
                             best_distance = dist
                             best_match = other_vowel.split('.')[0]
 
+            # print(f"Predicted: {person}-{best_match}, Actual: {person}-{correct_vowel}")
             if best_match == correct_vowel:
                 accuracy[person]["correct"] += 1
             accuracy[person]["total"] += 1
@@ -74,7 +85,8 @@ def compare_with_other_template(input_features, template_features):
 
                 for other_vowel in template_features[other_person]:
                     mfcc_other_vowel = template_features[other_person][other_vowel]
-                    dist, _ = fastdtw.fastdtw(mfcc_person_vowel, mfcc_other_vowel, dist=euclidean)
+                    # dist, _ = fastdtw.fastdtw(mfcc_person_vowel, mfcc_other_vowel, dist=euclidean)
+                    dist = dtw_ndim.distance_fast(mfcc_person_vowel, mfcc_other_vowel)
 
                     if dist < best_distance:
                         best_distance = dist
