@@ -98,14 +98,14 @@ def extract_features(directory, save_file):
                     file_path = os.path.join(person_dir, wav_file)
                     _, signal = wav.read(file_path)
                     signal = pre_emphasis(signal)
-                    mfcc_feat = psf.mfcc(signal, numcep=13, winfunc=np.hamming)
+                    mfcc_feat = psf.mfcc(signal, numcep=39, winfunc=np.hamming)
                     result = gaussian_filter(mfcc_feat, sigma=1)
 
                     # feat_mfcc_d = psf.delta(mfcc_feat, 2)
                     # feat_mfcc_dd = psf.delta(feat_mfcc_d, 2)
                     # result = np.column_stack((mfcc_feat, feat_mfcc_d, feat_mfcc_dd))
 
-                    result = averaging_template(np.array(result))
+                    # result = averaging_template(np.array(result))
 
                     features[person][wav_file] = np.array(result)
 
@@ -114,6 +114,28 @@ def extract_features(directory, save_file):
 
 extract_features('train_voices', 'template_features.pkl')
 extract_features('input_voices', 'input_features.pkl')
+
+def compute_average_template(template_features):
+    max_len = max([feat.shape[0] for feat in template_features])
+    padded_features = [np.pad(feat, ((0, max_len - feat.shape[0]), (0, 0)), mode='constant', constant_values=0) for feat in template_features]
+    avg_template = np.mean(padded_features, axis=0)
+    return avg_template
+
+def create_average_template(template_features):
+    avg_template = {}
+
+    vowel_templates = {}
+    for person in template_features:
+        for vowel in template_features[person]:
+            vowel_name = vowel.split('.')[0]
+            if vowel_name not in vowel_templates:
+                vowel_templates[vowel_name] = []
+            vowel_templates[vowel_name].append(template_features[person][vowel])
+
+    for key, value in vowel_templates.items():
+        avg_template[key] = compute_average_template(value)
+
+    return avg_template
 
 def compare_with_same_template(input_features, template_features):
     accuracy = {}
@@ -184,6 +206,32 @@ def compare_with_other_template(input_features, template_features):
 
     return accuracy
 
+def compare_with_average_template(input_features, template_features):
+    accuracy = {}
+    for person in tqdm(input_features, desc="Comparing with average template"):
+        accuracy[person] = {"correct": 0, "total": 0}
+        for vowel in input_features[person]:
+            mfcc_person_vowel = input_features[person][vowel]
+            best_match = None
+            best_distance = float('inf')
+            correct_vowel = vowel.split('.')[0]
+
+            average_template = create_average_template(template_features)
+            for other_vowel in average_template:
+                mfcc_other_vowel = average_template[other_vowel]
+                # dist, _ = fastdtw.fastdtw(mfcc_person_vowel, mfcc_other_vowel, dist=euclidean)
+                dist = dtw_ndim.distance_fast(mfcc_person_vowel, mfcc_other_vowel)
+                if dist < best_distance:
+                    best_distance = dist
+                    best_match = other_vowel
+
+            # print(f"Predicted: {best_match}, Actual: {person}-{correct_vowel}")
+            if best_match == correct_vowel:
+                accuracy[person]["correct"] += 1
+            accuracy[person]["total"] += 1
+
+    return accuracy
+
 with open('template_features.pkl', 'rb') as f:
     template_features = pickle.load(f)
 
@@ -218,3 +266,17 @@ total_comparisons = sum([len(other_accuracy[person]) for person in other_accurac
 overall_avg_accuracy = total_accuracy_sum / total_comparisons
 
 print("Overall average accuracy: {:.2%}".format(overall_avg_accuracy))
+
+#------------------------------------------------------------
+
+accuracy_with_average_template = compare_with_average_template(input_features, template_features)
+print(accuracy_with_average_template)
+
+for person in accuracy_with_average_template:
+    
+    correct = accuracy_with_average_template[person]["correct"]
+    total = accuracy_with_average_template[person]["total"]
+    acc = correct / total
+    print(f"Accuracy for {person}: {acc:.2%}")
+
+print("Average accuracy: {:.2%}".format(sum([accuracy_with_average_template[person]["correct"] / accuracy_with_average_template[person]["total"] for person in accuracy_with_average_template]) / len(accuracy_with_average_template)))
