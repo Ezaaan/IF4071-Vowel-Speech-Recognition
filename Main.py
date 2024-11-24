@@ -2,12 +2,34 @@ import os
 import pickle
 import python_speech_features as psf
 import scipy.io.wavfile as wav
-import fastdtw
+# import fastdtw
 from scipy.spatial.distance import euclidean
 from scipy.ndimage import gaussian_filter
 from dtaidistance import dtw, dtw_ndim
 import numpy as np
 from tqdm import tqdm
+from librosa.core import piptrack
+from scipy.signal import iirnotch, lfilter
+
+def remove_f0(signal, sr, quality=30):
+    # Estimate pitch using librosa's piptrack
+    pitches, magnitudes = piptrack(y=signal, sr=sr)
+    f0_estimates = []
+    for i in range(pitches.shape[1]):
+        pitch = pitches[:, i]
+        mag = magnitudes[:, i]
+        if mag.any():
+            f0_estimates.append(pitch[np.argmax(mag)])
+        else:
+            f0_estimates.append(0)  # No pitch detected
+    
+    # Remove F0 and harmonics using a notch filter
+    signal_filtered = signal.copy()
+    for f0 in f0_estimates:
+        if f0 > 0:  # Ignore frames with no detected pitch
+            b, a = iirnotch(f0, quality, sr)
+            signal_filtered = lfilter(b, a, signal_filtered)
+    return signal_filtered
 
 def pre_emphasis(signal, alpha=0.97):
     emphasized_signal = np.append(signal[0], signal[1:] - alpha * signal[:-1])
@@ -96,14 +118,19 @@ def extract_features(directory, save_file):
             for wav_file in os.listdir(person_dir):
                 if wav_file.endswith(".wav"):
                     file_path = os.path.join(person_dir, wav_file)
-                    _, signal = wav.read(file_path)
+                    sr, signal = wav.read(file_path)
                     signal = pre_emphasis(signal)
-                    mfcc_feat = psf.mfcc(signal, numcep=39, winfunc=np.hamming)
-                    result = gaussian_filter(mfcc_feat, sigma=1)
+                    # signal_no_f0 = remove_f0(signal, sr)
+                    mfcc_feat = psf.mfcc(signal, numcep=14, winfunc=np.hamming)
+                    smooth_mfcc_feat = gaussian_filter(mfcc_feat, sigma=2)
 
-                    # feat_mfcc_d = psf.delta(mfcc_feat, 2)
-                    # feat_mfcc_dd = psf.delta(feat_mfcc_d, 2)
-                    # result = np.column_stack((mfcc_feat, feat_mfcc_d, feat_mfcc_dd))
+                    mfcc_d_feat = psf.delta(mfcc_feat, 1)
+                    smooth_mfcc_d_feat = gaussian_filter(mfcc_d_feat, sigma=0.8)
+
+                    mfcc_dd_feat = psf.delta(mfcc_d_feat, 1)
+                    smooth_mfcc_dd_feat = gaussian_filter(mfcc_dd_feat, sigma=0.5)
+
+                    result = np.column_stack((smooth_mfcc_feat, smooth_mfcc_d_feat, smooth_mfcc_dd_feat))
 
                     # result = averaging_template(np.array(result))
 
