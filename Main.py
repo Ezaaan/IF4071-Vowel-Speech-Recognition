@@ -10,6 +10,7 @@ import numpy as np
 from tqdm import tqdm
 from librosa.core import piptrack
 from scipy.signal import iirnotch, lfilter
+import pprint
 
 def remove_f0(signal, sr, quality=30):
     # Estimate pitch using librosa's piptrack
@@ -148,6 +149,43 @@ def compute_average_template(template_features):
     avg_template = np.mean(padded_features, axis=0)
     return avg_template
 
+def align_features(source_feat, target_feat, path):
+    aligned_source = []
+
+    for t in range(len(target_feat)):
+        # Find all source indices aligned to this target index
+        source_indices = [s for tgt, s in path if tgt == t]
+
+        if len(source_indices) > 1:
+            # Average the source values if multiple frames align to one target frame
+            aligned_source.append(np.mean([source_feat[i] for i in source_indices], axis=0))
+        elif len(source_indices) == 1:
+            # Use the single source value
+            aligned_source.append(source_feat[source_indices[0]])
+        else:
+            # Handle the case where no source aligns to the target (edge case)
+            aligned_source.append(0)  # Default to 0 or any other handling logic
+
+    return np.array(aligned_source)
+
+def compute_true_average_template(template_features):
+    # Calculate the average length of features
+    avg_len = np.mean([feat.shape[0] for feat in template_features])
+
+    # Find the feature closest to the average length
+    lead_feat = min(template_features, key=lambda feat: abs(feat.shape[0] - avg_len))
+
+    alligned_feat = []
+    for feat in template_features:
+        print('TYPE1', type(lead_feat), type(feat), lead_feat.shape, feat.shape)
+        path = dtw_ndim.warping_path(lead_feat, feat)
+
+        avg_frame = align_features(feat, lead_feat, path)
+        alligned_feat.append(avg_frame)
+        
+    avg_template = np.mean(alligned_feat, axis=0)
+    return avg_template
+
 def create_average_template(template_features):
     avg_template = {}
 
@@ -160,7 +198,7 @@ def create_average_template(template_features):
             vowel_templates[vowel_name].append(template_features[person][vowel])
 
     for key, value in vowel_templates.items():
-        avg_template[key] = compute_average_template(value)
+        avg_template[key] = compute_true_average_template(value)
 
     return avg_template
 
@@ -181,7 +219,7 @@ def compare_with_same_template(input_features, template_features):
                     for other_vowel in template_features[other_person]:
                         mfcc_other_vowel = template_features[other_person][other_vowel]
                         # dist, _ = fastdtw.fastdtw(mfcc_person_vowel, mfcc_other_vowel, dist=euclidean)
-                        print(type(mfcc_person_vowel), type(mfcc_other_vowel))
+                        print('TYPE0', type(mfcc_person_vowel), type(mfcc_other_vowel))
                         dist = dtw_ndim.distance_fast(mfcc_person_vowel, mfcc_other_vowel)
                         if dist < best_distance:
                             best_distance = dist
@@ -233,31 +271,47 @@ def compare_with_other_template(input_features, template_features):
 
     return accuracy
 
-def compare_with_average_template(input_features, template_features):
+def compare_with_average_template(input_features, average_template):
     accuracy = {}
+    wrong_predictions = {}  # To track incorrect predictions for each vowel
+
     for person in tqdm(input_features, desc="Comparing with average template"):
         accuracy[person] = {"correct": 0, "total": 0}
+        
         for vowel in input_features[person]:
             mfcc_person_vowel = input_features[person][vowel]
             best_match = None
             best_distance = float('inf')
-            correct_vowel = vowel.split('.')[0]
+            correct_vowel = vowel.split('.')[0]  # Extract actual vowel name
 
-            average_template = create_average_template(template_features)
+            # Create average templates for comparison
+            
             for other_vowel in average_template:
                 mfcc_other_vowel = average_template[other_vowel]
-                # dist, _ = fastdtw.fastdtw(mfcc_person_vowel, mfcc_other_vowel, dist=euclidean)
+                print('TYPE0', type(mfcc_person_vowel), type(mfcc_other_vowel), mfcc_other_vowel.shape)
+
                 dist = dtw_ndim.distance_fast(mfcc_person_vowel, mfcc_other_vowel)
                 if dist < best_distance:
                     best_distance = dist
                     best_match = other_vowel
 
-            # print(f"Predicted: {best_match}, Actual: {person}-{correct_vowel}")
+            # Update accuracy
             if best_match == correct_vowel:
                 accuracy[person]["correct"] += 1
+            else:
+                # Track incorrect predictions
+                if correct_vowel not in wrong_predictions:
+                    wrong_predictions[correct_vowel] = {}
+                if best_match not in wrong_predictions[correct_vowel]:
+                    wrong_predictions[correct_vowel][best_match] = {"count": 0, "examples": []}
+
+                wrong_predictions[correct_vowel][best_match]["count"] += 1
+                wrong_predictions[correct_vowel][best_match]["examples"].append(f"{person}-{vowel}")
+
             accuracy[person]["total"] += 1
 
-    return accuracy
+    return accuracy, wrong_predictions
+
 
 with open('template_features.pkl', 'rb') as f:
     template_features = pickle.load(f)
@@ -265,38 +319,40 @@ with open('template_features.pkl', 'rb') as f:
 with open('input_features.pkl', 'rb') as f:
     input_features = pickle.load(f)
 
-self_accuracy = compare_with_same_template(input_features, template_features)
-print('\n')
+average_template = create_average_template(template_features)
 
-for person in self_accuracy:
-    correct = self_accuracy[person]["correct"]
-    total = self_accuracy[person]["total"]
-    acc = correct / total
-    print(f"Accuracy for {person}: {acc:.2%}")
+# self_accuracy = compare_with_same_template(input_features, template_features)
+# print('\n')
 
-print("Average accuracy: {:.2%}".format(sum([self_accuracy[person]["correct"] / self_accuracy[person]["total"] for person in self_accuracy]) / len(self_accuracy)))
+# for person in self_accuracy:
+#     correct = self_accuracy[person]["correct"]
+#     total = self_accuracy[person]["total"]
+#     acc = correct / total
+#     print(f"Accuracy for {person}: {acc:.2%}")
 
-other_accuracy = compare_with_other_template(input_features, template_features)
-print('\n')
+# print("Average accuracy: {:.2%}".format(sum([self_accuracy[person]["correct"] / self_accuracy[person]["total"] for person in self_accuracy]) / len(self_accuracy)))
 
-for person in other_accuracy:
-    avg_acc = sum([other_accuracy[person][other_person]["accuracy"] for other_person in other_accuracy[person]]) / len(other_accuracy[person])
-    print(f"Average accuracy for {person}: {avg_acc:.2%}")
+# other_accuracy = compare_with_other_template(input_features, template_features)
+# print('\n')
 
-    for other_person in other_accuracy[person]:
-        print(f"Accuracy for {person} using {other_person}'s templates: {other_accuracy[person][other_person]['accuracy']:.2%}")
+# for person in other_accuracy:
+#     avg_acc = sum([other_accuracy[person][other_person]["accuracy"] for other_person in other_accuracy[person]]) / len(other_accuracy[person])
+#     print(f"Average accuracy for {person}: {avg_acc:.2%}")
 
-total_accuracy_sum = sum(
-    [sum([other_accuracy[person][other_person]["accuracy"] for other_person in other_accuracy[person]]) for person in other_accuracy]
-)
-total_comparisons = sum([len(other_accuracy[person]) for person in other_accuracy])
-overall_avg_accuracy = total_accuracy_sum / total_comparisons
+#     for other_person in other_accuracy[person]:
+#         print(f"Accuracy for {person} using {other_person}'s templates: {other_accuracy[person][other_person]['accuracy']:.2%}")
 
-print("Overall average accuracy: {:.2%}".format(overall_avg_accuracy))
+# total_accuracy_sum = sum(
+#     [sum([other_accuracy[person][other_person]["accuracy"] for other_person in other_accuracy[person]]) for person in other_accuracy]
+# )
+# total_comparisons = sum([len(other_accuracy[person]) for person in other_accuracy])
+# overall_avg_accuracy = total_accuracy_sum / total_comparisons
+
+# print("Overall average accuracy: {:.2%}".format(overall_avg_accuracy))
 
 #------------------------------------------------------------
 
-accuracy_with_average_template = compare_with_average_template(input_features, template_features)
+accuracy_with_average_template, wrong_pred = compare_with_average_template(input_features, average_template)
 print(accuracy_with_average_template)
 
 for person in accuracy_with_average_template:
@@ -307,3 +363,5 @@ for person in accuracy_with_average_template:
     print(f"Accuracy for {person}: {acc:.2%}")
 
 print("Average accuracy: {:.2%}".format(sum([accuracy_with_average_template[person]["correct"] / accuracy_with_average_template[person]["total"] for person in accuracy_with_average_template]) / len(accuracy_with_average_template)))
+print("kesalahan perdiksi:\n")
+pprint.pprint(wrong_pred)
